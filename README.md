@@ -24,7 +24,7 @@ Ctrl+C или docker compose down
 ```
 
 ## Список env-переменных  
-- HTTP_ADDR - адрес сервера  
+- HTTP_PORT - порт хоста для публикации сервера через Docker Compose  
 - LOG_LEVEL - уровень подробности логов  
 - SHUTDOWN_TIMEOUT - время ожидания сервера после получения сигнала на остановку
 - DATABASE_URL - строка подключения к бд

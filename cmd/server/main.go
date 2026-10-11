@@ -68,6 +68,9 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+		if err := server.Close(); err != nil {
+			log.Printf("close server: %v", err)
+		}
 	}
 	pool.Close()
 }

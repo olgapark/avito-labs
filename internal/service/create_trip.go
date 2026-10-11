@@ -14,7 +14,7 @@ func (s *Service) CreateTrip(
 ) error {
 	trip.ID = uuid.New()
 	trip.Status = "active"
-	trip.StartedAt = time.Now().UTC()
+	trip.StartedAt = time.Now().UTC().Truncate(time.Microsecond)
 
 	return s.txManager.Do(ctx, func(ctx context.Context) error {
 		if err := s.repo.CreateTrip(ctx, trip); err != nil {
