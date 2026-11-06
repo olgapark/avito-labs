@@ -68,6 +68,11 @@ docker compose down
 
 ## Тесты
 
+Запуск сервера через Docker: 
+```bash
+docker compose up
+```
+Остановка: 
 ```bash
 make test
 make migrate-up
