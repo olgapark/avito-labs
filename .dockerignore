@@ -1,0 +1,5 @@
+.git/
+.tripgo/
+bin/
+.env
+.gitignore
