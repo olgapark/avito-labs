@@ -18,6 +18,7 @@ services:
         condition: service_completed_successfully
 
     environment:
+      HTTP_PORT: '8080'
       DATABASE_PASSWORD_FILE: '/run/secrets/postgres_password'
       LOG_LEVEL: "${LOG_LEVEL}"
       SHUTDOWN_TIMEOUT: "${SHUTDOWN_TIMEOUT}"
@@ -27,10 +28,22 @@ services:
       DATABASE_MAX_CONN_LIFETIME: "${DATABASE_MAX_CONN_LIFETIME}"
       DATABASE_CONNECT_TIMEOUT: "${DATABASE_CONNECT_TIMEOUT}"
       DATABASE_QUERY_TIMEOUT: "${DATABASE_QUERY_TIMEOUT}"
-      HTTP_READ_TIMEOUT: "${HTTP_READ_TIMEOUT}"
-      HTTP_READ_HEADER_TIMEOUT: "${HTTP_READ_HEADER_TIMEOUT}"
-      HTTP_WRITE_TIMEOUT: "${HTTP_WRITE_TIMEOUT}"
-      HTTP_IDLE_TIMEOUT: "${HTTP_IDLE_TIMEOUT}"
+      HTTP_READ_TIMEOUT: "${HTTP_READ_TIMEOUT:-10s}"
+      HTTP_READ_HEADER_TIMEOUT: "${HTTP_READ_HEADER_TIMEOUT:-5s}"
+      HTTP_WRITE_TIMEOUT: "${HTTP_WRITE_TIMEOUT:-10s}"
+      HTTP_IDLE_TIMEOUT: "${HTTP_IDLE_TIMEOUT:-60s}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-trip-service}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${DOCKER_OTEL_EXPORTER_OTLP_ENDPOINT:-http://tripgo-local-control-plane:30206}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
+      OTEL_RESOURCE_ATTRIBUTES: "${OTEL_RESOURCE_ATTRIBUTES:-}"
+      OTEL_TRACES_SAMPLER: "${OTEL_TRACES_SAMPLER:-parentbased_always_on}"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - default
+      - observability
 
     secrets:
       - postgres_password
@@ -79,3 +92,8 @@ secrets:
 
 volumes:
   postgres_data:
+
+networks:
+  observability:
+    external: true
+    name: kind

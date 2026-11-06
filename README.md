@@ -1,13 +1,51 @@
-# TripGo - лабораторная работа 1
+# TripGo
+
+## Архитектура
+
+Путь запроса:
+
+```text
+HTTP → usecase → repository → PostgreSQL
+          ↓
+        domain
+```
+
+- `internal/http` - разбирает запросы, вызывает сценарии и переводит ошибки в HTTP-ответы.
+- `internal/usecase` - сценарии создания, получения и завершения поездки; управляет транзакциями.
+- `internal/domain/trip` - модель поездки, валидация, переходы статусов и бизнес-ошибки. Не зависит от HTTP и БД.
+- `internal/model` - общие имена доменных типов для обмена между слоями.
+- `internal/repository/trip` - SQL-запросы и преобразование данных БД в модель поездки.
+- `internal/infra` - подключение к PostgreSQL, менеджер транзакций, логи, метрики и трейсы.
+
+Зависимости направлены к модели и домену. HTTP не импортирует конкретные usecase,
+а usecase не импортирует репозиторий и инфраструктуру: они вызывают зависимости через интерфейсы.
+`cmd/service` запускает приложение, а `internal/container` создаёт реализации и связывает их через конструкторы.
+
+Интерфейсы объявлены в `contract.go` на стороне потребителя:
+
+- В HTTP: `usecase` - только нужный обработчику метод `Execute`.
+- В usecase: `tripRepository` - нужные сценарию операции с поездками; `txManager` - выполнение операций одной транзакцией; `metrics` - запись метрик.
+- В репозитории и инфраструктуре: `database`, `beginner`, `activeTrips` - доступ к SQL, открытию транзакций и подсчёту активных поездок.
+
+Так каждый пакет задаёт только нужные ему методы. Реализацию можно заменить,
+а в unit-тестах передать моки без запуска HTTP-сервера и PostgreSQL.
+
+Скриншоты из Grafana и Jaeger находятся в [screenshots/](screenshots/).
 
 ## Запуск
+
 ```bash
 tripgoctl cluster start
 tripgoctl environment start
 tripgoctl connect
 ```
 
+`tripgoctl environment start` создаёт `.env` с настройками окружения.
+`.env.example` содержит пример переменных; значения подключения к БД нужно
+подставить из своего окружения. Сгенерированный `.env` заменять примером не нужно.
+
 Миграции:  
+
 ```bash
 make migrate-up
 make migrate-status
@@ -15,15 +53,35 @@ make migrate-down
 ```
 
 Запуск сервера через Docker: 
+
+```bash
+export POSTGRES_PASSWORD=password
+docker compose up --build -d
+curl -f http://localhost:8080/ready
+```
+
+Остановка: 
+
+```bash
+docker compose down
+```
+
+## Тесты
+
+Запуск сервера через Docker: 
 ```bash
 docker compose up
 ```
 Остановка: 
 ```bash
-Ctrl+C или docker compose down
+make test
+make migrate-up
+make test-integration
+make lint
 ```
 
 ## Список env-переменных  
+
 - HTTP_PORT - порт хоста для публикации сервера через Docker Compose  
 - LOG_LEVEL - уровень подробности логов  
 - SHUTDOWN_TIMEOUT - время ожидания сервера после получения сигнала на остановку
@@ -33,16 +91,20 @@ Ctrl+C или docker compose down
 - DATABASE_CONNECT_TIMEOUT - макс. время ожидания подключения приложения к бд
 - DATABASE_QUERY_TIMEOUT - макс. время выполнения одного запроса к бд
 - DATABASE_MAX_CONN_LIFETIME - макс. время жизни соединения между бд и приложением
-- HTTP_READ_TIMEOUT - макс. время ожидания ответа
-- HTTP_READ_HEADER_TIMEOUT - макс. время, в течении которого сервер ожиданиет получения http-заголовка
+- HTTP_READ_TIMEOUT - макс. время чтения запроса, включая тело
+- HTTP_READ_HEADER_TIMEOUT - макс. время чтения заголовков запроса
 - HTTP_WRITE_TIMEOUT - макс. время для записи ответа от сервера клиенту
 - HTTP_IDLE_TIMEOUT - макс. время в течение которого http-соединение может оставаться открытым без активности
+- POSTGRES_PASSWORD - пароль PostgreSQL в Docker Compose
+- OTEL_SERVICE_NAME - имя сервиса в телеметрии
+- OTEL_EXPORTER_OTLP_ENDPOINT - адрес коллектора для запуска приложения на хосте
+- DOCKER_OTEL_EXPORTER_OTLP_ENDPOINT - адрес коллектора для приложения в Docker
+- OTEL_EXPORTER_OTLP_PROTOCOL - протокол OTLP: `http/protobuf` или `grpc`
+- OTEL_TRACES_SAMPLER - стратегия сэмплирования трейсов
 
 ## Решения
+
 1. Был выбран уровень изоляции Read Committed.
-
-  При выборе Read Uncommitted возникло бы грязное чтение: транцакция 1 отправляет статус "completed", не сделав commit, транзакция 2 видит статус 1 и меняет свое состояния, хотя потом транзакция 1 сделала rollback.  
-
   При выборе Repeatable Read:  транзакция 1 считывает поездку со статусом "active". После этого транзакция 2 может изменить её статус на "completed" и зафиксировать изменения, но транзакция 1 в рамках своего снимка продолжит видеть прежнее состояние. Если затем транзакция 1 сама попытается изменить эту же строку, может возникнуть конфликт, из-за которого транзакцию придётся откатить и повторить. Для нашего сервиса не нужна такая строгая изоляция, мы в таких случаях можем использовать UPDATE ... WHERE status = 'active'  
 
 2. Менеджер транзакций реализован через метод `Do(ctx, fn)`.
@@ -61,9 +123,10 @@ Ctrl+C или docker compose down
 
 Он проверяет уникальность значений(driver_id), которые подходят под условие(status='active') и выведет ошибку.
 
-
 ## Docker
+
 Сборка: 
+
 ```bash
 docker compose up --build
 ```

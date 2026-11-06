@@ -15,7 +15,7 @@ FROM gcr.io/distroless/base-debian13@sha256:0ebad3510af52aefe45045cc01b07564570b
 USER 1000:1000
 COPY --from=builder --chmod=+x /build/bin/tripgo /tripgo
 
-ENV HTTP_ADDR=':8080'
+ENV HTTP_PORT='8080'
 EXPOSE 8080
 
 ENTRYPOINT ["/tripgo"]
