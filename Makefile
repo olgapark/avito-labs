@@ -14,7 +14,7 @@ test:
 	go tool cover -func=coverage.out
 
 test-integration:
-	go test -race -tags=integration -count=1 ./internal/repository/...
+	go test -race -tags=integration -count=1 ./internal/repository/... ./internal/worker/positions
 
 lint:
 	go tool golangci-lint run --config golangci.yml

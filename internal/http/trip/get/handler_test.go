@@ -22,14 +22,16 @@ import (
 func TestHandler_ServeHTTP(t *testing.T) {
 	const route = "/api/v1/trips/{tripId}"
 	tripID := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	lastPositionAt := time.Date(2026, time.November, 19, 9, 5, 0, 0, time.UTC)
 	sampleTrip := trip.Trip{
 		Data: trip.Data{
 			UserID:   uuid.MustParse("00000000-0000-4000-8000-000000000002"),
 			DriverID: uuid.MustParse("00000000-0000-4000-8000-000000000003"),
 		},
-		ID:        tripID,
-		Status:    trip.StatusActive,
-		StartedAt: time.Date(2026, time.November, 19, 9, 0, 0, 0, time.UTC),
+		ID:             tripID,
+		Status:         trip.StatusActive,
+		StartedAt:      time.Date(2026, time.November, 19, 9, 0, 0, 0, time.UTC),
+		LastPositionAt: &lastPositionAt,
 	}
 	usecaseErr := errors.New("internal failure")
 
@@ -94,6 +96,7 @@ func TestHandler_ServeHTTP(t *testing.T) {
 			var resp api.Trip
 			require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 			assert.Equal(t, tripID, resp.Id)
+			assert.Equal(t, &lastPositionAt, resp.LastPositionAt)
 		})
 	}
 }

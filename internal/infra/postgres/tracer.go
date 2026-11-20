@@ -46,7 +46,7 @@ func NewTracer(traces trace.TracerProvider, meters metric.MeterProvider) (*Query
 func (t *QueryTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	ctx = t.Tracer.TraceQueryStart(ctx, conn, data)
 	collection := ""
-	for _, table := range []string{"trip_status_history", "trips"} {
+	for _, table := range []string{"trip_status_history", "trip_positions", "trips"} {
 		if strings.Contains(data.SQL, table) {
 			collection = table
 			break
