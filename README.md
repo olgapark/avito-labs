@@ -32,6 +32,25 @@ HTTP → usecase → repository → PostgreSQL
 
 Скриншоты из Grafana и Jaeger находятся в [screenshots/](screenshots/).
 
+## Опрос устаревших поездок  
+```text
+Сканер → очередь → пул воркеров → Push Service
+```  
+Если очередь заполнена, сканер сразу пропускает задачу, пишет предупреждение
+и увеличивает `tripgo.stale_checks{result="dropped"}`. Поездка снова попадёт
+в выборку на следующем тике, если к тому моменту она всё ещё активна  
+
+| Переменная | По умолчанию | Назначение |
+| --- | --- | --- |
+| `POSITION_CHECK_INTERVAL` | `30s` | Период сканирования |
+| `POSITION_STALE_AFTER` | `60s` | Порог устаревания координаты или начала поездки |
+| `POSITION_WORKERS` | `4` | Количество воркеров |
+| `POSITION_QUEUE_SIZE` | `100` | Ёмкость очереди |
+| `PUSH_HTTP_URL` | Из `.env`, который создаёт `tripgoctl` | Базовый URL Push Service |
+| `PUSH_REQUEST_TIMEOUT` | `1s` | Таймаут HTTP-вызова Push Service |
+| `DATABASE_QUERY_TIMEOUT` | Задаётся в `.env` | Таймаут запроса к PostgreSQL |
+| `SHUTDOWN_TIMEOUT` | Задаётся в `.env` | Общий бюджет остановки сервиса |  
+
 ## Запуск
 
 ```bash

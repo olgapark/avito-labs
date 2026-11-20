@@ -15,7 +15,7 @@ func scanTrip(row pgx.Row) (model.Trip, error) {
 	var result model.Trip
 	err := row.Scan(&result.ID, &result.UserID, &result.DriverID,
 		&result.StartLatitude, &result.StartLongitude, &result.EndLatitude, &result.EndLongitude,
-		&result.Price, &result.Status, &result.StartedAt, &result.FinishedAt)
+		&result.Price, &result.Status, &result.StartedAt, &result.FinishedAt, &result.LastPositionAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Trip{}, domain.ErrTripNotFound
 	}
@@ -26,6 +26,10 @@ func scanTrip(row pgx.Row) (model.Trip, error) {
 	if result.FinishedAt != nil {
 		finishedAt := result.FinishedAt.UTC()
 		result.FinishedAt = &finishedAt
+	}
+	if result.LastPositionAt != nil {
+		lastPositionAt := result.LastPositionAt.UTC()
+		result.LastPositionAt = &lastPositionAt
 	}
 	return result, nil
 }

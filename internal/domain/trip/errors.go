@@ -2,6 +2,8 @@ package trip
 
 import "errors"
 
+const coordinateOutOfRange = "coordinate is out of range"
+
 var (
 	ErrTripNotFound  = errors.New("trip not found")
 	ErrTripCompleted = errors.New("trip already completed")

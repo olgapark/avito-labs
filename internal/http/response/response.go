@@ -20,5 +20,6 @@ func Trip(trip model.Trip) api.Trip {
 		StartPoint: api.Coordinates{Latitude: trip.StartLatitude, Longitude: trip.StartLongitude},
 		EndPoint:   api.Coordinates{Latitude: trip.EndLatitude, Longitude: trip.EndLongitude},
 		Price:      trip.Price, Status: api.TripStatus(trip.Status), StartedAt: trip.StartedAt, FinishedAt: trip.FinishedAt,
+		LastPositionAt: trip.LastPositionAt,
 	}
 }

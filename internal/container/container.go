@@ -14,11 +14,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/olgapark/avito-labs/internal/config"
+	"github.com/olgapark/avito-labs/internal/gateway/push"
 	"github.com/olgapark/avito-labs/internal/http/health"
 	"github.com/olgapark/avito-labs/internal/http/middleware"
 	createhandler "github.com/olgapark/avito-labs/internal/http/trip/create"
 	finishhandler "github.com/olgapark/avito-labs/internal/http/trip/finish"
 	gethandler "github.com/olgapark/avito-labs/internal/http/trip/get"
+	positionhandler "github.com/olgapark/avito-labs/internal/http/trip/positions"
 	"github.com/olgapark/avito-labs/internal/infra/postgres"
 	"github.com/olgapark/avito-labs/internal/infra/postgres/transaction"
 	"github.com/olgapark/avito-labs/internal/infra/telemetry"
@@ -26,6 +28,8 @@ import (
 	"github.com/olgapark/avito-labs/internal/usecase/trip/create"
 	"github.com/olgapark/avito-labs/internal/usecase/trip/finish"
 	"github.com/olgapark/avito-labs/internal/usecase/trip/get"
+	positionusecase "github.com/olgapark/avito-labs/internal/usecase/trip/positions"
+	"github.com/olgapark/avito-labs/internal/worker/positions"
 )
 
 type Container struct {
@@ -33,6 +37,8 @@ type Container struct {
 	Logger    logger
 	pool      *pgxpool.Pool
 	telemetry *telemetry.Providers
+	positions *positions.Pool
+	push      *push.Client
 }
 
 func New(ctx context.Context, cfg *config.Config) (_ *Container, resultErr error) {
@@ -41,7 +47,7 @@ func New(ctx context.Context, cfg *config.Config) (_ *Container, resultErr error
 		return nil, fmt.Errorf("parse log level: %w", err)
 	}
 	logger := telemetry.NewLogger(os.Stdout, level, cfg.OTELServiceName)
-	providers, err := telemetry.New(ctx, cfg, "lab2")
+	providers, err := telemetry.New(ctx, cfg, "lab3")
 	if err != nil {
 		return nil, err
 	}
@@ -81,14 +87,29 @@ func New(ctx context.Context, cfg *config.Config) (_ *Container, resultErr error
 	if err != nil {
 		return nil, err
 	}
+	positionMetrics, err := telemetry.NewPositionMetrics(meter)
+	if err != nil {
+		return nil, err
+	}
+	pushClient := push.New(cfg.PushHTTPURL, cfg.PushRequestTimeout, providers.Traces)
+	positionPool := positions.New(positions.Config{
+		StaleAfter: cfg.PositionStaleAfter, PushTimeout: cfg.PushRequestTimeout,
+		Workers: cfg.PositionWorkers, QueueSize: cfg.PositionQueueSize,
+	}, repo, pushClient, positionMetrics, logger, providers.Traces.Tracer("trip-service/positions"))
+	if err := telemetry.ObservePositionPool(meter, positionPool); err != nil {
+		return nil, err
+	}
 	createTrip := create.New(repo, tx, logger, metrics, time.Now, uuid.New)
 	getTrip := get.New(repo)
 	finishTrip := finish.New(repo, tx, logger, metrics, time.Now)
+	tripPositions := positionhandler.New(positionusecase.New(repo, tx, positionPool, positionMetrics, time.Now))
 	healthHandler := health.New(pool, cfg.DatabaseQueryTimeout)
 	router := chi.NewRouter()
 	router.Post("/api/v1/trips", createhandler.New(createTrip).ServeHTTP)
 	router.Get("/api/v1/trips/{tripId}", gethandler.New(getTrip).ServeHTTP)
 	router.Post("/api/v1/trips/{tripId}/finish", finishhandler.New(finishTrip).ServeHTTP)
+	router.Post("/api/v1/trips/{tripId}/positions", tripPositions.Save)
+	router.Get("/api/v1/trips/{tripId}/positions", tripPositions.List)
 	router.Get("/health", healthHandler.Health)
 	router.Get("/ready", healthHandler.Ready)
 	handler, err := middleware.Metrics(meter, router)
@@ -103,7 +124,10 @@ func New(ctx context.Context, cfg *config.Config) (_ *Container, resultErr error
 		ReadTimeout: cfg.HTTPReadTimeout, ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		WriteTimeout: cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
 	}
-	return &Container{Server: server, Logger: logger, pool: pool, telemetry: providers}, nil
+	positionPool.Start(context.WithoutCancel(ctx), positions.NewTicker(cfg.PositionCheckInterval))
+	return &Container{
+		Server: server, Logger: logger, pool: pool, telemetry: providers, positions: positionPool, push: pushClient,
+	}, nil
 }
 
 func (c *Container) Shutdown(ctx context.Context) error {
@@ -111,6 +135,13 @@ func (c *Container) Shutdown(ctx context.Context) error {
 	if serverErr != nil {
 		serverErr = errors.Join(serverErr, c.Server.Close())
 	}
+	if err := c.positions.Shutdown(ctx); err != nil {
+		return errors.Join(serverErr, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(serverErr, err)
+	}
+	c.push.Close()
 	if err := c.telemetry.Shutdown(ctx); err != nil {
 		c.Logger.WarnContext(ctx, "telemetry shutdown failed", "error", err)
 	}

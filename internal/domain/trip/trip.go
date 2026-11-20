@@ -26,10 +26,11 @@ type Data struct {
 
 type Trip struct {
 	Data
-	ID         uuid.UUID
-	Status     string
-	StartedAt  time.Time
-	FinishedAt *time.Time
+	ID             uuid.UUID
+	Status         string
+	StartedAt      time.Time
+	FinishedAt     *time.Time
+	LastPositionAt *time.Time
 }
 
 var dataValidator = func() *validator.Validate {
@@ -48,7 +49,7 @@ func (d Data) Validate() error {
 	}
 
 	failure := failures[0]
-	message := "coordinate is out of range"
+	message := coordinateOutOfRange
 	switch failure.Tag() {
 	case "required":
 		message = "must be a non-zero UUID"
