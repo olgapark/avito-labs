@@ -3,7 +3,6 @@ package finish
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,12 +13,12 @@ import (
 type Usecase struct {
 	repo    tripRepository
 	tx      txManager
-	logger  *slog.Logger
+	logger  logger
 	metrics metrics
 	now     func() time.Time
 }
 
-func New(repo tripRepository, tx txManager, logger *slog.Logger, metrics metrics, now func() time.Time) *Usecase {
+func New(repo tripRepository, tx txManager, logger logger, metrics metrics, now func() time.Time) *Usecase {
 	return &Usecase{repo: repo, tx: tx, logger: logger, metrics: metrics, now: now}
 }
 

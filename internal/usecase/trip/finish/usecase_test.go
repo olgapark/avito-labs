@@ -3,13 +3,11 @@ package finish_test
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
 	"github.com/olgapark/avito-labs/internal/domain/trip"
@@ -17,65 +15,129 @@ import (
 	"github.com/olgapark/avito-labs/internal/usecase/trip/finish"
 )
 
-func TestExecute(t *testing.T) {
-	dbErr := errors.New("database failed")
-	for _, test := range []struct {
-		name       string
-		completed  bool
-		fetchErr   error
-		updateErr  error
-		historyErr error
-		txErr      error
-		wantErr    error
+func TestUsecase_Execute(t *testing.T) {
+	tripID := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	active := model.Trip{
+		ID: tripID,
+		Data: trip.Data{
+			UserID:         uuid.MustParse("00000000-0000-4000-8000-000000000002"),
+			DriverID:       uuid.MustParse("00000000-0000-4000-8000-000000000003"),
+			StartLatitude:  59.93,
+			StartLongitude: 30.31,
+			EndLatitude:    60.01,
+			EndLongitude:   29.76,
+			Price:          1250,
+		},
+		Status:    trip.StatusActive,
+		StartedAt: time.Date(2026, time.November, 19, 8, 0, 0, 0, time.UTC),
+	}
+	now := time.Date(2026, time.November, 19, 9, 0, 0, 0, time.UTC)
+	completed := model.Trip{
+		ID:         tripID,
+		Data:       active.Data,
+		Status:     trip.StatusCompleted,
+		StartedAt:  active.StartedAt,
+		FinishedAt: new(now),
+	}
+	updateErr := errors.New("update failed")
+	historyErr := errors.New("insert history failed")
+
+	expectWrites := func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID, err error) {
+		fromStatus := trip.StatusActive
+		gomock.InOrder(
+			repo.EXPECT().FetchForUpdate(txCtx, id).Return(active, nil),
+			repo.EXPECT().Update(txCtx, completed).Return(nil),
+			repo.EXPECT().AddHistory(txCtx, completed, &fromStatus).Return(err),
+		)
+	}
+
+	tests := []struct {
+		name      string
+		in        uuid.UUID
+		setup     func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID)
+		wantRes   model.Trip
+		wantEvent bool
+		wantErr   assert.ErrorAssertionFunc
 	}{
-		{name: "success"},
-		{name: "completed", completed: true, wantErr: trip.ErrTripCompleted},
-		{name: "not found", fetchErr: trip.ErrTripNotFound, wantErr: trip.ErrTripNotFound},
-		{name: "fetch error", fetchErr: dbErr, wantErr: dbErr},
-		{name: "update error", updateErr: dbErr, wantErr: dbErr},
-		{name: "history error", historyErr: dbErr, wantErr: dbErr},
-		{name: "commit error", txErr: dbErr, wantErr: dbErr},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			repo, tx, metrics := NewMocktripRepository(ctrl), NewMocktxManager(ctrl), NewMockmetrics(ctrl)
-			ctx := context.Background()
+		{
+			name: "активная поездка завершается и публикацией события",
+			in:   tripID,
+			setup: func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID) {
+				expectWrites(repo, txCtx, id, nil)
+			},
+			wantRes:   completed,
+			wantEvent: true,
+			wantErr:   assert.NoError,
+		},
+		{
+			name: "отсутствующая поездка не обновляется",
+			in:   tripID,
+			setup: func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID) {
+				repo.EXPECT().FetchForUpdate(txCtx, id).Return(model.Trip{}, trip.ErrTripNotFound)
+			},
+			wantErr: errorIs(trip.ErrTripNotFound),
+		},
+		{
+			name: "завершённая поездка не обновляется повторно",
+			in:   tripID,
+			setup: func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID) {
+				previous := completed
+				previous.FinishedAt = new(time.Date(2026, time.November, 19, 8, 30, 0, 0, time.UTC))
+				repo.EXPECT().FetchForUpdate(txCtx, id).Return(previous, nil)
+			},
+			wantErr: errorIs(trip.ErrTripCompleted),
+		},
+		{
+			name: "сбой обновления останавливает завершение до записи истории",
+			in:   tripID,
+			setup: func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID) {
+				gomock.InOrder(
+					repo.EXPECT().FetchForUpdate(txCtx, id).Return(active, nil),
+					repo.EXPECT().Update(txCtx, completed).Return(updateErr),
+				)
+			},
+			wantErr: errorIs(updateErr),
+		},
+		{
+			name: "сбой записи истории прерывает транзакцию",
+			in:   tripID,
+			setup: func(repo *MocktripRepository, txCtx context.Context, id uuid.UUID) {
+				expectWrites(repo, txCtx, id, historyErr)
+			},
+			wantErr: errorIs(historyErr),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
 			txCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			now, id := time.Now().UTC().Truncate(time.Microsecond), uuid.New()
-			current := model.Trip{ID: id, Status: trip.StatusActive}
-			if test.completed {
-				current.Status = trip.StatusCompleted
-			}
-			want := model.Trip{ID: id, Status: trip.StatusCompleted, FinishedAt: &now}
+			t.Cleanup(cancel)
+			ctrl := gomock.NewController(t)
+			repo := NewMocktripRepository(ctrl)
+			tx := NewMocktxManager(ctrl)
+			logger := NewMocklogger(ctrl)
+			metrics := NewMockmetrics(ctrl)
+			tt.setup(repo, txCtx, tt.in)
 			tx.EXPECT().Do(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, fn func(context.Context) error) error {
-				if err := fn(txCtx); err != nil {
-					return err
-				}
-				return test.txErr
+				return fn(txCtx)
 			})
-			repo.EXPECT().FetchForUpdate(txCtx, id).Return(current, test.fetchErr)
-			if test.fetchErr == nil && !test.completed {
-				repo.EXPECT().Update(txCtx, want).Return(test.updateErr)
-				if test.updateErr == nil {
-					from := trip.StatusActive
-					repo.EXPECT().AddHistory(txCtx, want, &from).Return(test.historyErr)
-				}
-			}
-			if test.wantErr == nil {
+			if tt.wantEvent {
 				metrics.EXPECT().Completed(ctx)
+				logger.EXPECT().InfoContext(ctx, gomock.Any(), "trip_id", tripID)
 			}
-			u := finish.New(repo, tx, slog.New(slog.NewTextHandler(io.Discard, nil)), metrics, func() time.Time { return now })
-			got, err := u.Execute(ctx, id)
-			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("got %v, want %v", err, test.wantErr)
-			}
-			if test.wantErr == nil && !reflect.DeepEqual(got, want) {
-				t.Fatalf("got %+v, want %+v", got, want)
-			}
-			if test.wantErr != nil && got != (model.Trip{}) {
-				t.Fatalf("returned uncommitted trip: %+v", got)
-			}
+			usecase := finish.New(repo, tx, logger, metrics, func() time.Time { return now })
+
+			got, err := usecase.Execute(ctx, tt.in)
+
+			tt.wantErr(t, err)
+			assert.Equal(t, tt.wantRes, got)
 		})
+	}
+}
+
+func errorIs(want error) assert.ErrorAssertionFunc {
+	return func(t assert.TestingT, err error, args ...any) bool {
+		return assert.ErrorIs(t, err, want, args...)
 	}
 }

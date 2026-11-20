@@ -2,14 +2,13 @@ package middleware
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 
 	"github.com/olgapark/avito-labs/internal/http/domainerror"
 )
 
-func Recover(logger *slog.Logger, next http.Handler) http.Handler {
+func Recover(logger panicLogger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, state := domainerror.WithState(r.Context())
 		r = r.WithContext(ctx)

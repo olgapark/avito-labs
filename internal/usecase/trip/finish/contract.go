@@ -20,6 +20,10 @@ type txManager interface {
 	Do(ctx context.Context, fn func(context.Context) error) error
 }
 
+type logger interface {
+	InfoContext(ctx context.Context, msg string, args ...any)
+}
+
 type metrics interface {
 	Completed(ctx context.Context)
 }

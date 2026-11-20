@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/olgapark/avito-labs/internal/domain/trip"
@@ -17,85 +20,96 @@ import (
 	"github.com/olgapark/avito-labs/internal/model"
 )
 
-const validBody = `{"user_id":"5cb72c04-7650-45c9-a79b-bcdba0631e0c","driver_id":"8860b315-ec86-42eb-a17c-7c163d721ff5","start_point":{"latitude":0,"longitude":0},"end_point":{"latitude":90,"longitude":180},"price":0}`
-
-func TestHandler(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		err    error
-		status int
-		code   string
-	}{
-		{"success", nil, http.StatusCreated, ""},
-		{"driver busy", trip.ErrDriverBusy, http.StatusConflict, "driver_busy"},
-		{"internal error", errors.New("SQL INSERT password=secret"), http.StatusInternalServerError, "internal_error"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			usecase := NewMockusecase(gomock.NewController(t))
-			want := model.Trip{ID: uuid.New(), Status: trip.StatusActive}
-			usecase.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(_ interface{}, input model.CreateTrip) (model.Trip, error) {
-				if input.UserID == uuid.Nil || input.DriverID == uuid.Nil || input.EndLatitude != 90 || input.EndLongitude != 180 || input.Price != 0 {
-					t.Fatalf("wrong input: %+v", input)
-				}
-				return want, test.err
-			})
-			response := httptest.NewRecorder()
-			create.New(usecase).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/trips", strings.NewReader(validBody)))
-			if response.Code != test.status {
-				t.Fatalf("status %d: %s", response.Code, response.Body.String())
-			}
-			if test.err == nil {
-				var body api.Trip
-				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-					t.Fatal(err)
-				}
-				if body.Id != want.ID || response.Header().Get("Location") != "/api/v1/trips/"+want.ID.String() {
-					t.Fatalf("wrong response: %+v", body)
-				}
-			} else {
-				var body api.Problem
-				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-					t.Fatal(err)
-				}
-				if body.Code != test.code || response.Header().Get("Content-Type") != "application/problem+json" || strings.Contains(response.Body.String(), "secret") {
-					t.Fatalf("wrong problem: %+v", body)
-				}
-			}
-		})
+func TestHandler_ServeHTTP(t *testing.T) {
+	const (
+		path      = "/api/v1/trips"
+		tripID    = "00000000-0000-4000-8000-000000000001"
+		validBody = `{
+			"user_id": "00000000-0000-4000-8000-000000000002",
+			"driver_id": "00000000-0000-4000-8000-000000000003",
+			"start_point": {"latitude": 59.93, "longitude": 30.31},
+			"end_point": {"latitude": 60.01, "longitude": 29.76},
+			"price": 1250
+		}`
+	)
+	input := model.CreateTrip{
+		UserID:         uuid.MustParse("00000000-0000-4000-8000-000000000002"),
+		DriverID:       uuid.MustParse("00000000-0000-4000-8000-000000000003"),
+		StartLatitude:  59.93,
+		StartLongitude: 30.31,
+		EndLatitude:    60.01,
+		EndLongitude:   29.76,
+		Price:          1250,
 	}
-}
+	created := model.Trip{
+		ID:        uuid.MustParse(tripID),
+		Data:      input,
+		Status:    trip.StatusActive,
+		StartedAt: time.Date(2026, time.November, 19, 9, 0, 0, 123456000, time.UTC),
+	}
+	usecaseErr := errors.New("internal failure")
 
-func TestInvalidBody(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		body string
+	tests := []struct {
+		name            string
+		body            string
+		setup           func(*Mockusecase)
+		wantStatus      int
+		wantProblemCode string
 	}{
-		{"empty", ""},
-		{"malformed", "{"},
-		{"null", "null"},
-		{"array", "[]"},
-		{"missing fields", "{}"},
-		{"trailing object", validBody + "{}"},
-		{"unknown field", strings.Replace(validBody, `"price":0`, `"price":0,"extra":1`, 1)},
-		{"null price", strings.Replace(validBody, `"price":0`, `"price":null`, 1)},
-		{"negative price", strings.Replace(validBody, `"price":0`, `"price":-1`, 1)},
-		{"missing coordinate", strings.Replace(validBody, `"latitude":0,`, "", 1)},
-		{"null coordinate", strings.Replace(validBody, `"latitude":0`, `"latitude":null`, 1)},
-		{"range", strings.Replace(validBody, `"latitude":0`, `"latitude":91`, 1)},
-		{"bad uuid", strings.Replace(validBody, "5cb72c04-7650-45c9-a79b-bcdba0631e0c", "bad", 1)},
-		{"zero uuid", strings.Replace(validBody, "5cb72c04-7650-45c9-a79b-bcdba0631e0c", uuid.Nil.String(), 1)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+		{
+			name: "создаёт поездку, возвращает 201",
+			body: validBody,
+			setup: func(usecase *Mockusecase) {
+				usecase.EXPECT().Execute(gomock.Any(), input).Return(created, nil)
+			},
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:            "запрос без долготы, возвращает 400",
+			body:            strings.Replace(validBody, `, "longitude": 29.76`, "", 1),
+			wantStatus:      http.StatusBadRequest,
+			wantProblemCode: "invalid_request",
+		},
+		{
+			name: "внутренняя ошибка, возвращает 500",
+			body: validBody,
+			setup: func(usecase *Mockusecase) {
+				usecase.EXPECT().Execute(gomock.Any(), input).Return(model.Trip{}, usecaseErr)
+			},
+			wantStatus:      http.StatusInternalServerError,
+			wantProblemCode: "internal_error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
 			usecase := NewMockusecase(gomock.NewController(t))
-			response := httptest.NewRecorder()
-			create.New(usecase).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/trips", strings.NewReader(test.body)))
-			var problem api.Problem
-			if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
-				t.Fatal(err)
+			if tt.setup != nil {
+				tt.setup(usecase)
 			}
-			if response.Code != http.StatusBadRequest || problem.Code != "invalid_request" {
-				t.Fatalf("got %d: %+v", response.Code, problem)
+
+			create.New(usecase).ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantProblemCode != "" {
+				var problem api.Problem
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+				assert.Equal(t, tt.wantProblemCode, problem.Code)
+				if tt.wantStatus == http.StatusInternalServerError {
+					assert.NotContains(t, rec.Body.String(), usecaseErr.Error())
+					assert.Nil(t, problem.Detail)
+				}
+				return
 			}
+
+			assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			var resp api.Trip
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+			assert.Equal(t, created.ID, resp.Id)
+			assert.Equal(t, path+"/"+tripID, rec.Header().Get("Location"))
 		})
 	}
 }

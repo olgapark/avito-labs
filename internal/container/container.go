@@ -30,7 +30,7 @@ import (
 
 type Container struct {
 	Server    *http.Server
-	Logger    *slog.Logger
+	Logger    logger
 	pool      *pgxpool.Pool
 	telemetry *telemetry.Providers
 }
