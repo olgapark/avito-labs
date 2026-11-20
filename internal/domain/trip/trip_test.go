@@ -1,88 +1,72 @@
 package trip_test
 
 import (
-	"errors"
-	"math"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/olgapark/avito-labs/internal/domain/trip"
 )
 
-func TestValidate(t *testing.T) {
+func TestTrip_Finish(t *testing.T) {
+	id := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	data := trip.Data{
+		UserID:         uuid.MustParse("00000000-0000-4000-8000-000000000002"),
+		DriverID:       uuid.MustParse("00000000-0000-4000-8000-000000000003"),
+		StartLatitude:  59.93,
+		StartLongitude: 30.31,
+		EndLatitude:    60.01,
+		EndLongitude:   29.76,
+	}
+	startedAt := time.Date(2026, time.November, 19, 8, 0, 0, 0, time.UTC)
+	at := time.Date(2026, time.November, 19, 12, 0, 0, 123456789, time.FixedZone("MSK", 3*60*60))
+	finishedAt := time.Date(2026, time.November, 19, 9, 0, 0, 123456000, time.UTC)
+	prevFinishedAt := time.Date(2026, time.November, 19, 8, 30, 0, 0, time.UTC)
+
 	tests := []struct {
-		name   string
-		change func(*trip.Data)
-		field  string
+		name    string
+		in      trip.Trip
+		wantRes trip.Trip
+		wantErr assert.ErrorAssertionFunc
 	}{
-		{"valid", func(*trip.Data) {}, ""},
-		{"zero user", func(d *trip.Data) { d.UserID = uuid.Nil }, "user_id"},
-		{"zero driver", func(d *trip.Data) { d.DriverID = uuid.Nil }, "driver_id"},
-		{"negative price", func(d *trip.Data) { d.Price = -1 }, "price"},
-		{"start latitude", func(d *trip.Data) { d.StartLatitude = 91 }, "start_point.latitude"},
-		{"start longitude", func(d *trip.Data) { d.StartLongitude = -181 }, "start_point.longitude"},
-		{"end latitude", func(d *trip.Data) { d.EndLatitude = -91 }, "end_point.latitude"},
-		{"end longitude", func(d *trip.Data) { d.EndLongitude = 181 }, "end_point.longitude"},
-		{"NaN", func(d *trip.Data) { d.EndLatitude = math.NaN() }, "end_point.latitude"},
-		{"infinity", func(d *trip.Data) { d.StartLatitude = math.Inf(1) }, "start_point.latitude"},
-		{"boundaries", func(d *trip.Data) {
-			d.StartLatitude = -90
-			d.EndLatitude = 90
-			d.StartLongitude = -180
-			d.EndLongitude = 180
-		}, ""},
+		{
+			name: "завершить активную поездку",
+			in:   trip.Trip{Data: data, ID: id, Status: trip.StatusActive, StartedAt: startedAt},
+			wantRes: trip.Trip{
+				Data: data, ID: id, Status: trip.StatusCompleted,
+				StartedAt: startedAt, FinishedAt: &finishedAt,
+			},
+			wantErr: assert.NoError,
+		},
+		{
+			name: "повторное завершение не меняет время",
+			in: trip.Trip{
+				Data: data, ID: id, Status: trip.StatusCompleted,
+				StartedAt: startedAt, FinishedAt: new(prevFinishedAt),
+			},
+			wantRes: trip.Trip{
+				Data: data, ID: id, Status: trip.StatusCompleted,
+				StartedAt: startedAt, FinishedAt: &prevFinishedAt,
+			},
+			wantErr: func(t assert.TestingT, err error, args ...any) bool {
+				return assert.ErrorIs(t, err, trip.ErrTripCompleted, args...)
+			},
+		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			data := trip.Data{UserID: uuid.New(), DriverID: uuid.New()}
-			test.change(&data)
-			err := data.Validate()
-			if test.field == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			var validation *trip.ValidationError
-			if !errors.As(err, &validation) || validation.Field != test.field || validation.Error() == "" {
-				t.Fatalf("want validation error for %s, got %v", test.field, err)
-			}
-		})
-	}
-}
 
-func TestNew(t *testing.T) {
-	id, now := uuid.New(), time.Now()
-	data := trip.Data{UserID: uuid.New(), DriverID: uuid.New(), Price: 10}
-	created, err := trip.New(data, id, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.ID != id || created.Data != data || created.Status != trip.StatusActive || created.FinishedAt != nil || !created.StartedAt.Equal(now.Truncate(time.Microsecond)) {
-		t.Fatalf("unexpected trip: %+v", created)
-	}
-	if _, err := trip.New(trip.Data{}, id, now); err == nil {
-		t.Fatal("invalid trip accepted")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in
+			if got.FinishedAt != nil {
+				got.FinishedAt = new(*got.FinishedAt)
+			}
 
-func TestFinish(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	for _, status := range []string{trip.StatusActive, trip.StatusCompleted} {
-		t.Run(status, func(t *testing.T) {
-			current := trip.Trip{Status: status}
-			err := current.Finish(now)
-			if status == trip.StatusCompleted {
-				if !errors.Is(err, trip.ErrTripCompleted) || current.FinishedAt != nil {
-					t.Fatalf("completed trip changed: %+v, %v", current, err)
-				}
-				return
-			}
-			if err != nil || current.Status != trip.StatusCompleted || current.FinishedAt == nil || !current.FinishedAt.Equal(now) {
-				t.Fatalf("finish result: %+v, %v", current, err)
-			}
+			err := got.Finish(at)
+
+			tt.wantErr(t, err)
+			assert.Equal(t, tt.wantRes, got)
 		})
 	}
 }

@@ -16,7 +16,7 @@ func PoolConfig(cfg *config.Config) (*pgxpool.Config, error) {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
 	if path := os.Getenv("DATABASE_PASSWORD_FILE"); path != "" {
-		password, err := os.ReadFile(path)
+		password, err := os.ReadFile(path) //nolint:gosec // The operator supplies the path to the mounted database secret.
 		if err != nil {
 			return nil, fmt.Errorf("read DATABASE_PASSWORD_FILE: %w", err)
 		}

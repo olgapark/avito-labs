@@ -1,9 +1,11 @@
 package trip
 
 import (
-	"math"
+	"errors"
+	"reflect"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 )
 
@@ -13,13 +15,13 @@ const (
 )
 
 type Data struct {
-	UserID         uuid.UUID
-	DriverID       uuid.UUID
-	StartLatitude  float64
-	StartLongitude float64
-	EndLatitude    float64
-	EndLongitude   float64
-	Price          int64
+	UserID         uuid.UUID `validate:"required" field:"user_id"`
+	DriverID       uuid.UUID `validate:"required" field:"driver_id"`
+	Price          int64     `validate:"min=0" field:"price"`
+	StartLatitude  float64   `validate:"gte=-90,lte=90" field:"start_point.latitude"`
+	StartLongitude float64   `validate:"gte=-180,lte=180" field:"start_point.longitude"`
+	EndLatitude    float64   `validate:"gte=-90,lte=90" field:"end_point.latitude"`
+	EndLongitude   float64   `validate:"gte=-180,lte=180" field:"end_point.longitude"`
 }
 
 type Trip struct {
@@ -30,32 +32,30 @@ type Trip struct {
 	FinishedAt *time.Time
 }
 
+var dataValidator = func() *validator.Validate {
+	validate := validator.New(validator.WithRequiredStructEnabled())
+	validate.RegisterTagNameFunc(func(field reflect.StructField) string {
+		return field.Tag.Get("field")
+	})
+	return validate
+}()
+
 func (d Data) Validate() error {
-	if d.UserID == uuid.Nil {
-		return &ValidationError{Field: "user_id", Message: "must be a non-zero UUID"}
+	err := dataValidator.Struct(d)
+	failures, ok := errors.AsType[validator.ValidationErrors](err)
+	if !ok {
+		return err
 	}
-	if d.DriverID == uuid.Nil {
-		return &ValidationError{Field: "driver_id", Message: "must be a non-zero UUID"}
+
+	failure := failures[0]
+	message := "coordinate is out of range"
+	switch failure.Tag() {
+	case "required":
+		message = "must be a non-zero UUID"
+	case "min":
+		message = "must be non-negative"
 	}
-	if d.Price < 0 {
-		return &ValidationError{Field: "price", Message: "must be non-negative"}
-	}
-	coordinates := []struct {
-		field string
-		value float64
-		limit float64
-	}{
-		{"start_point.latitude", d.StartLatitude, 90},
-		{"start_point.longitude", d.StartLongitude, 180},
-		{"end_point.latitude", d.EndLatitude, 90},
-		{"end_point.longitude", d.EndLongitude, 180},
-	}
-	for _, coordinate := range coordinates {
-		if math.IsNaN(coordinate.value) || math.IsInf(coordinate.value, 0) || math.Abs(coordinate.value) > coordinate.limit {
-			return &ValidationError{Field: coordinate.field, Message: "coordinate is out of range"}
-		}
-	}
-	return nil
+	return &ValidationError{Field: failure.Field(), Message: message}
 }
 
 func New(data Data, id uuid.UUID, at time.Time) (Trip, error) {
