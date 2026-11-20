@@ -2,6 +2,9 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -12,7 +15,6 @@ type Config struct {
 	LogLevel                string
 	ShutdownTimeout         time.Duration
 	DatabaseURL             string
-	DatabasePassword        *string
 	DatabaseMaxConns        int32
 	DatabaseMinConns        int32
 	DatabaseMaxConnLifetime time.Duration
@@ -22,92 +24,88 @@ type Config struct {
 	HTTPReadHeaderTimeout   time.Duration
 	HTTPWriteTimeout        time.Duration
 	HTTPIdleTimeout         time.Duration
+	OTELServiceName         string
+	OTELProtocol            string
 }
 
 func Load() (*Config, error) {
-	config := &Config{}
-	var err error
-
-	config.HTTPAddr, err = requiredEnv("HTTP_ADDR")
-	if err != nil {
-		return nil, err
-	}
-
-	config.LogLevel, err = requiredEnv("LOG_LEVEL")
-	if err != nil {
-		return nil, err
-	}
-
-	config.ShutdownTimeout, err = durationEnv("SHUTDOWN_TIMEOUT")
-	if err != nil {
-		return nil, err
-	}
-
-	config.DatabaseURL, err = requiredEnv("DATABASE_URL")
-	if err != nil {
-		return nil, err
-	}
-
-	if path := os.Getenv("DATABASE_PASSWORD_FILE"); path != "" {
-		password, err := os.ReadFile(path)
+	cfg := &Config{}
+	for _, variable := range []struct {
+		name   string
+		target *string
+	}{
+		{"LOG_LEVEL", &cfg.LogLevel},
+		{"DATABASE_URL", &cfg.DatabaseURL},
+		{"OTEL_SERVICE_NAME", &cfg.OTELServiceName},
+		{"OTEL_EXPORTER_OTLP_PROTOCOL", &cfg.OTELProtocol},
+	} {
+		value, err := requiredEnv(variable.name)
 		if err != nil {
-			return nil, fmt.Errorf("read DATABASE_PASSWORD_FILE: %w", err)
+			return nil, err
 		}
-		value := string(password)
-		config.DatabasePassword = &value
+		*variable.target = value
 	}
-
-	config.DatabaseMaxConns, err = int32Env("DATABASE_MAX_CONNS")
+	port, err := int32Env("HTTP_PORT")
 	if err != nil {
 		return nil, err
 	}
-
-	config.DatabaseMinConns, err = int32Env("DATABASE_MIN_CONNS")
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("HTTP_PORT must be between 1 and 65535")
+	}
+	cfg.HTTPAddr = net.JoinHostPort("", strconv.Itoa(int(port)))
+	for _, variable := range []struct {
+		name   string
+		target *time.Duration
+	}{
+		{"SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout},
+		{"DATABASE_MAX_CONN_LIFETIME", &cfg.DatabaseMaxConnLifetime},
+		{"DATABASE_CONNECT_TIMEOUT", &cfg.DatabaseConnectTimeout},
+		{"DATABASE_QUERY_TIMEOUT", &cfg.DatabaseQueryTimeout},
+		{"HTTP_READ_TIMEOUT", &cfg.HTTPReadTimeout},
+		{"HTTP_READ_HEADER_TIMEOUT", &cfg.HTTPReadHeaderTimeout},
+		{"HTTP_WRITE_TIMEOUT", &cfg.HTTPWriteTimeout},
+		{"HTTP_IDLE_TIMEOUT", &cfg.HTTPIdleTimeout},
+	} {
+		value, err := durationEnv(variable.name)
+		if err != nil {
+			return nil, err
+		}
+		*variable.target = value
+	}
+	cfg.DatabaseMaxConns, err = int32Env("DATABASE_MAX_CONNS")
 	if err != nil {
 		return nil, err
 	}
-
-	config.DatabaseMaxConnLifetime, err = durationEnv("DATABASE_MAX_CONN_LIFETIME")
+	cfg.DatabaseMinConns, err = int32Env("DATABASE_MIN_CONNS")
 	if err != nil {
 		return nil, err
 	}
-
-	config.DatabaseConnectTimeout, err = durationEnv("DATABASE_CONNECT_TIMEOUT")
-	if err != nil {
+	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	return cfg, nil
+}
 
-	config.DatabaseQueryTimeout, err = durationEnv("DATABASE_QUERY_TIMEOUT")
+func (c *Config) validate() error {
+	if c.DatabaseMaxConns <= 0 || c.DatabaseMinConns < 0 || c.DatabaseMinConns > c.DatabaseMaxConns {
+		return fmt.Errorf("require DATABASE_MAX_CONNS > 0 and 0 <= DATABASE_MIN_CONNS <= DATABASE_MAX_CONNS")
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(c.LogLevel)); err != nil {
+		return fmt.Errorf("parse LOG_LEVEL: %w", err)
+	}
+	endpoint, err := requiredEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	config.HTTPReadTimeout, err = durationEnv("HTTP_READ_TIMEOUT")
-	if err != nil {
-		return nil, err
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL")
 	}
-
-	config.HTTPReadHeaderTimeout, err = durationEnv("HTTP_READ_HEADER_TIMEOUT")
-	if err != nil {
-		return nil, err
+	if c.OTELProtocol != "http/protobuf" && c.OTELProtocol != "grpc" {
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL must be http/protobuf or grpc")
 	}
-
-	config.HTTPWriteTimeout, err = durationEnv("HTTP_WRITE_TIMEOUT")
-	if err != nil {
-		return nil, err
-	}
-
-	config.HTTPIdleTimeout, err = durationEnv("HTTP_IDLE_TIMEOUT")
-	if err != nil {
-		return nil, err
-	}
-
-	if config.DatabaseMaxConns <= 0 || config.DatabaseMinConns < 0 || config.DatabaseMinConns > config.DatabaseMaxConns {
-		return nil, fmt.Errorf("require DATABASE_MAX_CONNS > 0 and 0 <= DATABASE_MIN_CONNS <= DATABASE_MAX_CONNS")
-	}
-
-	return config, nil
-
+	return nil
 }
 
 func requiredEnv(name string) (string, error) {
@@ -129,8 +127,8 @@ func durationEnv(name string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse %s: %w", name, err)
 	}
-	if duration == 0 {
-		return 0, fmt.Errorf("%s must not be zero", name)
+	if duration <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return duration, nil
 }
